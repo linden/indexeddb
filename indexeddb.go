@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"sync/atomic"
 	"syscall/js"
 )
 
@@ -52,23 +53,30 @@ func valid(x any) error {
 	}
 }
 
-// put is either an insert or an update,
-func (s *Store) Put(key any, value any) error {
+func (s *Store) put(key, value any) (js.Value, error) {
 	Logger.Debug("store put", "key", key, "value", value)
 
 	err := valid(key)
 	if err != nil {
-		return errors.Join(ErrKeyInvalid, err)
+		return js.Value{}, errors.Join(ErrKeyInvalid, err)
 	}
 
 	err = valid(value)
 	if err != nil {
-		return errors.Join(ErrValueInvalid, err)
+		return js.Value{}, errors.Join(ErrValueInvalid, err)
 	}
 
 	// put the key and value.
 	// the key is the 2nd argument as it's technically optional.
-	req := s.value.Call("put", value, key)
+	return s.value.Call("put", value, key), nil
+}
+
+// put is either an insert or an update,
+func (s *Store) Put(key any, value any) error {
+	req, err := s.put(key, value)
+	if err != nil {
+		return err
+	}
 
 	// wait for the request to complete.
 	return await(req, nil)
@@ -132,6 +140,66 @@ func (s *Store) Count() (int, error) {
 	}
 
 	return req.Get("result").Int(), nil
+}
+
+func (s *Store) Batch() *Batch {
+	return &Batch{
+		store: s,
+
+		doneChan: make(chan struct{}),
+		errChan:  make(chan error),
+	}
+}
+
+type Batch struct {
+	store *Store
+
+	count int
+	ready atomic.Bool
+
+	doneChan chan struct{}
+	errChan  chan error
+}
+
+func (b *Batch) Put(key, value any) error {
+	req, err := b.store.put(key, value)
+	if err != nil {
+		return err
+	}
+
+	listen(req, "onerror", func(v js.Value) {
+		for !b.ready.Load() {
+		}
+
+		b.errChan <- wrapError(v)
+	})
+
+	listen(req, "onsuccess", func(v js.Value) {
+		for !b.ready.Load() {
+		}
+
+		b.doneChan <- struct{}{}
+	})
+
+	b.count++
+
+	return nil
+}
+
+func (b *Batch) Wait() error {
+	b.ready.Store(true)
+
+	for b.count > 0 {
+		select {
+		case <-b.doneChan:
+			b.count -= 1
+
+		case err := <-b.errChan:
+			return err
+		}
+	}
+
+	return nil
 }
 
 // an upgrade is a database connection before needing it's objects/indexes established.
