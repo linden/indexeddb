@@ -7,7 +7,6 @@ import "testing"
 func TestBasic(t *testing.T) {
 	db, err := New("counter", 1, func(up *Upgrade) error {
 		up.CreateStore("count")
-		up.CreateStore("friends")
 
 		return nil
 	})
@@ -39,5 +38,7 @@ func TestBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Logf("%v\n", v.Int())
+	if v.Int() != 20 {
+		t.Fatalf("expected 20 but got %d", v.Int())
+	}
 }
