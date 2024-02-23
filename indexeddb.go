@@ -14,6 +14,7 @@ import (
 
 var (
 	IndexedDB = js.Global().Get("indexedDB")
+	Object    = js.Global().Get("Object")
 	Array     = js.Global().Get("Array")
 )
 
@@ -38,11 +39,16 @@ type Store struct {
 }
 
 // keys and values can be pretty much anything in indexeddb.
-// we limit to strings, bools, ints, uints, floats and slices.
+// we limit to strings, bools, ints, uints, floats, slices and javascript values.
 //
 // values indexedb supports: https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API/Basic_Terminology.
 // values Go supports: https://github.com/golang/go/blob/676002986c55a296ea348c30706d6b63a3256b7f/src/syscall/js/js.go#L152-L211.
 func valid(x any) error {
+	// check if the type is a javascript value.
+	if _, js := x.(js.Value); js {
+		return nil
+	}
+
 	switch v := reflect.ValueOf(x); {
 	// check if the value is a string, bool, int, uint or float.
 	case v.Kind() == reflect.String, v.Kind() == reflect.Bool, v.CanInt(), v.CanUint(), v.CanFloat():
@@ -67,13 +73,47 @@ func (s *Store) put(key, value any) (js.Value, error) {
 	}
 
 	// put the key and value.
-	// the key is the 2nd argument as it's technically optional.
+	// the key is the 2nd argument as it's optional.
 	return s.value.Call("put", value, key), nil
 }
 
 // put is either an insert or an update,
 func (s *Store) Put(key any, value any) error {
 	req, err := s.put(key, value)
+	if err != nil {
+		return err
+	}
+
+	// wait for the request to complete.
+	return await(req, nil)
+}
+
+func (s *Store) add(key, value any) (js.Value, error) {
+	// ensure the key is valid if provided.
+	if key != nil {
+		err := valid(key)
+		if err != nil {
+			return js.Value{}, errors.Join(ErrKeyInvalid, err)
+		}
+	}
+
+	// ensure the value is valid.
+	err := valid(value)
+	if err != nil {
+		return js.Value{}, errors.Join(ErrValueInvalid, err)
+	}
+
+	// the key should be undefined to be considered nil.
+	if key == nil {
+		key = js.Undefined()
+	}
+
+	// add the value and optionally the key.
+	return s.value.Call("add", value, key), nil
+}
+
+func (s *Store) Add(key, value any) error {
+	req, err := s.add(key, value)
 	if err != nil {
 		return err
 	}
@@ -151,6 +191,53 @@ func (s *Store) Batch() *Batch {
 	}
 }
 
+func (s *Store) Index(name string) *Index {
+	val := s.value.Call("index", name)
+
+	return &Index{
+		value: val,
+	}
+}
+
+func (s *Store) NewIndex(name string) *Index {
+	val := s.value.Call("createIndex", name, name)
+
+	return &Index{
+		value: val,
+	}
+}
+
+type Index struct {
+	value js.Value
+}
+
+func (i *Index) Get(key any) (*js.Value, error) {
+	Logger.Debug("index get", "key", key)
+
+	err := valid(key)
+	if err != nil {
+		return nil, errors.Join(ErrKeyInvalid, err)
+	}
+
+	req := i.value.Call("get", key)
+
+	// wait for the request to complete.
+	err = await(req, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res := req.Get("result")
+
+	// check if the result was not found.
+	if res.IsUndefined() {
+		return nil, ErrValueNotFound
+	}
+
+	// return the result.
+	return &res, nil
+}
+
 type Batch struct {
 	store *Store
 
@@ -161,12 +248,7 @@ type Batch struct {
 	errChan  chan error
 }
 
-func (b *Batch) Put(key, value any) error {
-	req, err := b.store.put(key, value)
-	if err != nil {
-		return err
-	}
-
+func (b *Batch) await(req js.Value) {
 	listen(req, "onerror", func(v js.Value) {
 		for !b.ready.Load() {
 		}
@@ -182,6 +264,26 @@ func (b *Batch) Put(key, value any) error {
 	})
 
 	b.count++
+}
+
+func (b *Batch) Put(key, value any) error {
+	req, err := b.store.put(key, value)
+	if err != nil {
+		return err
+	}
+
+	b.await(req)
+
+	return nil
+}
+
+func (b *Batch) Add(key, value any) error {
+	req, err := b.store.add(key, value)
+	if err != nil {
+		return err
+	}
+
+	b.await(req)
 
 	return nil
 }
@@ -207,8 +309,37 @@ type Upgrade struct {
 	value js.Value
 }
 
+type StoreConfig struct {
+	KeyPath       string
+	AutoIncrement bool
+}
+
+func (up *Upgrade) NewStore(name string, cfg *StoreConfig) *Store {
+	opts := js.Undefined()
+
+	if cfg != nil {
+		opts = Object.New()
+
+		if cfg.KeyPath != "" {
+			opts.Set("keyPath", cfg.KeyPath)
+		}
+
+		if cfg.AutoIncrement {
+			opts.Set("autoIncrement", true)
+		}
+	}
+
+	// create a new object store.
+	val := up.value.Call("createObjectStore", name, opts)
+
+	return &Store{
+		value: val,
+	}
+}
+
+// deprecated use `NewStore` instead.
 func (up *Upgrade) CreateStore(name string) {
-	up.value.Call("createObjectStore", name)
+	up.NewStore(name, nil)
 }
 
 type Mode int
