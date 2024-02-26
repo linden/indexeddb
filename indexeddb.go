@@ -182,6 +182,31 @@ func (s *Store) Count() (int, error) {
 	return req.Get("result").Int(), nil
 }
 
+func (s *Store) GetAll() ([]js.Value, error) {
+	req := s.value.Call("getAll")
+
+	// wait for the request to complete.
+	err := await(req, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res := req.Get("result")
+
+	// check if the result was not found.
+	if res.IsUndefined() {
+		return nil, ErrValueNotFound
+	}
+
+	var v []js.Value
+
+	for i := 0; i < res.Get("length").Int(); i++ {
+		v = append(v, res.Index(i))
+	}
+
+	return v, nil
+}
+
 func (s *Store) Batch() *Batch {
 	return &Batch{
 		store: s,
