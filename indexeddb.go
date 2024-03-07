@@ -62,12 +62,20 @@ func valid(x any) error {
 func (s *Store) put(key, value any) (js.Value, error) {
 	Logger.Debug("store put", "key", key, "value", value)
 
-	err := valid(key)
-	if err != nil {
-		return js.Value{}, errors.Join(ErrKeyInvalid, err)
+	// ensure the key is valid if provided.
+	if key != nil {
+		err := valid(key)
+		if err != nil {
+			return js.Value{}, errors.Join(ErrKeyInvalid, err)
+		}
 	}
 
-	err = valid(value)
+	// the key should be undefined to be considered nil.
+	if key == nil {
+		key = js.Undefined()
+	}
+
+	err := valid(value)
 	if err != nil {
 		return js.Value{}, errors.Join(ErrValueInvalid, err)
 	}
@@ -182,7 +190,7 @@ func (s *Store) Count() (int, error) {
 	return req.Get("result").Int(), nil
 }
 
-func (s *Store) GetAll() ([]js.Value, error) {
+func (s *Store) GetAll() (*js.Value, error) {
 	req := s.value.Call("getAll")
 
 	// wait for the request to complete.
@@ -198,13 +206,7 @@ func (s *Store) GetAll() ([]js.Value, error) {
 		return nil, ErrValueNotFound
 	}
 
-	var v []js.Value
-
-	for i := 0; i < res.Get("length").Int(); i++ {
-		v = append(v, res.Index(i))
-	}
-
-	return v, nil
+	return &res, nil
 }
 
 func (s *Store) Batch() *Batch {
