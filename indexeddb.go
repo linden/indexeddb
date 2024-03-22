@@ -443,6 +443,24 @@ func (db *DB) NewTransaction(stores []string, mode Mode) (*Transaction, error) {
 	}, nil
 }
 
+func (db *DB) View(scope []string, fn func(tx *Transaction) error) error {
+	tx, err := db.NewTransaction(scope, ReadMode)
+	if err != nil {
+		return err
+	}
+
+	return fn(tx)
+}
+
+func (db *DB) Update(scope []string, fn func(tx *Transaction) error) error {
+	tx, err := db.NewTransaction(scope, ReadWriteMode)
+	if err != nil {
+		return err
+	}
+
+	return fn(tx)
+}
+
 // close the database.
 func (db *DB) Close() error {
 	db.value.Call("close")
